@@ -1053,7 +1053,7 @@ function detail(g,t){
     b+=`<div class="bar sk"><i style="width:${Math.min(100,xp/to*100)}%"></i><em>${x.skill} ${lv(x.skill)} → ${x.lvl} · ${fmt(to-xp)} XP</em></div>`;}
   if(g.auto?.ca){const c=caTier(g.auto.ca),pts=S.manual?.ca;
     if(c)b+=`<div class="bar" style="margin-top:6px"><i style="width:${c.of?c.got/c.of*100:0}%"></i><em>${c.got} / ${c.of} tasks</em></div>`;
-    if(pts)b+=`<p class="sub">${pts.points} points · ${Math.max(0,pts.nextAt-pts.points)} to the next reward unlock.</p>`;}
+    if(pts)b+=`<p class="sub">${pts.points} points${pts.nextAt?` · ${Math.max(0,pts.nextAt-pts.points)} to the next reward unlock`:""}.</p>`;}
   if(g.auto?.openQuests){const ip=S.quests?.inProgress||[];
     b+=ip.length?`<ul class="checks">${ip.map(q=>`<li>${esc(q)}</li>`).join("")}</ul>`:`<p>Nothing open.</p>`;}
   b+=itemList(g);
@@ -1176,19 +1176,34 @@ async function ingest(files){if(!db){toast("Saving isn't available in this view.
   for(const f of files){let j;try{j=JSON.parse(await f.text())}catch(e){msgs.push(`${f.name}: not valid JSON`);continue;}
     try{
       if(j.osrsRoadmapBackup&&window.LOCALDB){await LOCALDB.restore(j);msgs.push("backup restored");}
-      else if(j.skills){const dte=today(),levels={};let tot=0;for(const k in j.skills){levels[k]=j.skills[k].level;tot+=j.skills[k].level;}
-        const Lc={};SKILLS.forEach(n=>Lc[n]=levels[n]||1);
-        await db.doc("state/levels").set({skills:j.skills,updatedAt:dte});
-        await db.doc("history/"+dte).set({levels,total:tot,combat:combat(Lc)});msgs.push("skills");}
+      else if(j.schemaVersion&&j.skills&&(j.quests?.entries||j.bank?.items))await ingestAde(j,msgs);
+      else if(j.skills){await saveLevels(j.skills);msgs.push("skills");}
       else if(j.quests){await db.doc("state/quests").set({qp:j.quests.questPoints,completed:j.quests.completed||[],
         inProgress:j.quests.inProgress||[],notStarted:j.quests.notStarted||[],updatedAt:today()});msgs.push("quests");}
-      else if(j.bank){const items={};for(const it of j.bank)items[it.name]=(items[it.name]||0)+(it.quantity||0);
-        await db.doc("state/bank").set({items,updatedAt:today()});
-        if(!SITE)await db.doc("bankhist/"+today()).set({items,updatedAt:today()});  // Supplies drain: one snapshot per export day
-        msgs.push("bank");}
+      else if(j.bank){await saveBank(j.bank);msgs.push("bank");}
       else msgs.push(`${f.name}: not a recognised export`);
     }catch(e){msgs.push(`${f.name}: couldn't save`);}}
   toast("Updated: "+msgs.join(", "));}
+async function saveLevels(skills){const dte=today(),levels={};let tot=0;for(const k in skills){levels[k]=skills[k].level;tot+=skills[k].level;}
+  const Lc={};SKILLS.forEach(n=>Lc[n]=levels[n]||1);
+  await db.doc("state/levels").set({skills,updatedAt:dte});
+  await db.doc("history/"+dte).set({levels,total:tot,combat:combat(Lc)});}
+async function saveBank(list){const items={};for(const it of list)items[it.name]=(items[it.name]||0)+(it.quantity||0);
+  await db.doc("state/bank").set({items,updatedAt:today()});
+  if(!SITE)await db.doc("bankhist/"+today()).set({items,updatedAt:today()});}  // Supplies drain: one snapshot per export day
+// Account Data Exporter (RuneLite Plugin Hub, .runelite/account-data-exporter/<name>.json): one file with every section.
+const CA_PTS={Easy:1,Medium:2,Hard:3,Elite:4,Master:5,Grandmaster:6};  // points per task (OSRS Wiki, Combat Achievements)
+async function ingestAde(j,msgs){await saveLevels(j.skills);msgs.push("skills");
+  const e=j.quests?.entries;if(e){const by=s=>e.filter(x=>x.state===s).map(x=>x.name);
+    await db.doc("state/quests").set({qp:j.quests.questPoints,completed:by("FINISHED"),inProgress:by("IN_PROGRESS"),notStarted:by("NOT_STARTED"),updatedAt:today()});msgs.push("quests");}
+  if(j.bank?.loaded&&j.bank.items?.length){await saveBank(j.bank.items);msgs.push("bank");}else msgs.push("no bank (open it in-game, then export again)");
+  const ct=j.combatAchievements?.tiers;if(ct?.length){const tiers={};let points=0;
+    for(const t of ct){tiers[t.name]=`${t.completed}/${t.total}`;points+=t.completed*(CA_PTS[t.name]||0);}
+    await db.doc("state/manual").set({...(S.manual||{}),ca:{points,tiers}});msgs.push("combat achievements");}
+  // Diaries: Dan's page ticks them from WikiSync at build time; the site keeps the run of finished tiers from Easy up.
+  const rg=j.achievementDiaries?.regions;if(SITE&&rg?.length){const c={...C()},d={...(c.diaryTiers||{})};
+    for(const r of rg){let n=0;for(const t of ["easy","medium","hard","elite"]){if(!r[t]?.complete)break;n++;}if(n)d[r.name]=n;else delete d[r.name];}
+    c.diaryTiers=d;save(c);msgs.push("diaries");}}
 const drop=$("drop");
 $("file").addEventListener("change",e=>{ingest([...e.target.files]);e.target.value="";});
 ["dragenter","dragover"].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.add("over");}));
